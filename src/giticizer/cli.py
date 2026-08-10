@@ -8,6 +8,7 @@ from typing import Any
 import typer
 
 from giticizer.analysis import core
+from giticizer.analysis.helptext import render_all_analysis_help, render_analysis_help
 from giticizer.exporters.io import to_csv, to_json
 from giticizer.integrations.mapping import apply_group_mapping, validate_group_mapping
 from giticizer.integrations.pr_gate import run_pr_gate
@@ -41,6 +42,11 @@ ANALYSES = {
     "code-health": score_entities,
 }
 
+ANALYSIS_HELP = (
+    "Analysis to run. Use 'giticizer analyses' for available analyses with meaning/usefulness, "
+    "or 'giticizer explain-analysis --analysis <name>' for details."
+)
+
 
 def run() -> None:
     app()
@@ -49,7 +55,7 @@ def run() -> None:
 @app.command()
 def analyze(
     repo: Path = typer.Option(Path("."), "--repo", "-p"),
-    analysis: str = typer.Option("authors", "--analysis", "-a"),
+    analysis: str = typer.Option("authors", "--analysis", "-a", help=ANALYSIS_HELP),
     vcs_mode: str = typer.Option("git2", "--version-control", "-c"),
     after: str | None = typer.Option(None, "--after"),
     rows: int | None = typer.Option(None, "--rows", "-r"),
@@ -125,3 +131,25 @@ def pr_gate(
     typer.echo(to_csv(result), nl=False)
     if result and float(result[0]["delta-score"]) > fail_on_increase:
         raise typer.Exit(code=2)
+
+
+@app.command("ui")
+def launch_ui() -> None:
+    from giticizer.ui import run_ui
+
+    run_ui()
+
+
+@app.command("analyses")
+def analyses_help() -> None:
+    names = sorted(ANALYSES.keys())
+    typer.echo(render_all_analysis_help(names))
+
+
+@app.command("explain-analysis")
+def explain_analysis(
+    analysis: str = typer.Option(..., "--analysis", "-a", help="Analysis name to explain."),
+) -> None:
+    if analysis not in ANALYSES:
+        raise typer.BadParameter(f"Unsupported analysis '{analysis}'")
+    typer.echo(f"{analysis}\n{render_analysis_help(analysis)}")

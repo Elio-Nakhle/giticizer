@@ -16,6 +16,21 @@ uv sync
 uv run giticizer analyze --repo . --analysis summary --output-format csv
 ```
 
+## Desktop UI
+
+Launch the local UI and select any Git repository folder from the picker.
+
+```bash
+uv run giticizer ui
+```
+
+In the UI you can:
+
+- choose the repository folder
+- choose any available analysis
+- adjust thresholds and options
+- run and inspect results in a table
+
 ## Implemented analyses
 
 - `summary`
