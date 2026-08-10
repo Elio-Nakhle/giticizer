@@ -4,22 +4,40 @@ from pathlib import Path
 from typing import Any
 
 from giticizer.scoring.code_health import score_entities
-from giticizer.vcs.git_reader import read_git_log
+from giticizer.vcs.git_reader import read_git_log_for_ref
 from giticizer.vcs.parsers import parse_log
 
 
-def run_pr_gate(repo: Path, changed: set[str]) -> list[dict[str, Any]]:
-    raw = read_git_log(repo, mode="git2", after=None, no_merges=False, excludes=[])
-    head = parse_log(raw, mode="git2")
-    # Approx baseline: repository state excluding changed files from score comparison.
-    base_like = [c for c in head if all(f.path not in changed for f in c.files)]
+def run_pr_gate(repo: Path, base_ref: str, changed: set[str]) -> list[dict[str, Any]]:
+    if not changed:
+        return []
+
+    base = parse_log(
+        read_git_log_for_ref(
+            repo,
+            mode="git2",
+            ref=base_ref,
+            no_merges=False,
+            excludes=[],
+        ),
+        mode="git2",
+    )
+    head = parse_log(
+        read_git_log_for_ref(
+            repo,
+            mode="git2",
+            ref="HEAD",
+            no_merges=False,
+            excludes=[],
+        ),
+        mode="git2",
+    )
+
     head_scores = {
         r["entity"]: float(r["risk-score"]) for r in score_entities(head) if r["entity"] in changed
     }
     base_scores = {
-        r["entity"]: float(r["risk-score"])
-        for r in score_entities(base_like)
-        if r["entity"] in changed
+        r["entity"]: float(r["risk-score"]) for r in score_entities(base) if r["entity"] in changed
     }
 
     rows = []

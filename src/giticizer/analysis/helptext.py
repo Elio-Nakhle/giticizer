@@ -104,6 +104,16 @@ ANALYSIS_INFO: dict[str, dict[str, str]] = {
         ),
         "useful": "Useful for prioritizing risky files and tracking maintainability trends.",
     },
+    "action-items": {
+        "meaning": (
+            "Prioritized, explainable recommendations derived from behavioral risk "
+            "signals for each entity."
+        ),
+        "useful": (
+            "Useful for turning analysis into concrete next actions during planning, "
+            "triage, and PR review."
+        ),
+    },
 }
 
 

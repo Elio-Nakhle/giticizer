@@ -3,7 +3,9 @@ from pathlib import Path
 
 from giticizer.analysis import core
 from giticizer.integrations.mapping import apply_group_mapping, validate_group_mapping
+from giticizer.integrations.pr_gate import run_pr_gate
 from giticizer.models import Commit, FileChange
+from giticizer.scoring.action_items import action_items
 from giticizer.scoring.code_health import score_entities
 from giticizer.vcs.parsers import parse_log
 
@@ -41,3 +43,28 @@ def test_mapping(tmp_path: Path) -> None:
     (tmp_path / "src" / "a.py").write_text("x", encoding="utf-8")
     stats = {r["statistic"]: r["value"] for r in validate_group_mapping(tmp_path, m)}
     assert stats["rules"] == 1 and stats["files-total"] >= 1
+
+
+def test_action_items_schema() -> None:
+    rows = action_items(COMMITS)
+    assert rows
+    row = rows[0]
+    assert {
+        "entity",
+        "priority-score",
+        "primary-risk",
+        "recommended-action",
+        "expected-impact",
+        "owner-hint",
+    }.issubset(row.keys())
+
+
+def test_pr_gate_uses_base_and_head(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    def fake_read(*_, ref: str, **__) -> str:
+        if ref == "origin/main":
+            return "--b1--2026-08-01--Alice--init\n1\t0\tsrc/a.py\n"
+        return "--h1--2026-08-02--Alice--change\n10\t0\tsrc/a.py\n"
+
+    monkeypatch.setattr("giticizer.integrations.pr_gate.read_git_log_for_ref", fake_read)
+    rows = run_pr_gate(Path("."), "origin/main", {"src/a.py"})
+    assert rows and float(rows[0]["head-risk"]) >= float(rows[0]["base-risk"])

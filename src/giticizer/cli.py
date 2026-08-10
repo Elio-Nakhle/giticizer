@@ -12,6 +12,7 @@ from giticizer.analysis.helptext import render_all_analysis_help, render_analysi
 from giticizer.exporters.io import to_csv, to_json
 from giticizer.integrations.mapping import apply_group_mapping, validate_group_mapping
 from giticizer.integrations.pr_gate import run_pr_gate
+from giticizer.scoring.action_items import action_items
 from giticizer.scoring.code_health import score_entities
 from giticizer.vcs.git_reader import changed_files_against_base, read_git_log
 from giticizer.vcs.parsers import aggregate_daily, parse_log
@@ -40,6 +41,7 @@ ANALYSES = {
     "fragmentation": core.fragmentation,
     "soc": core.soc,
     "code-health": score_entities,
+    "action-items": action_items,
 }
 
 ANALYSIS_HELP = (
@@ -127,7 +129,7 @@ def pr_gate(
     fail_on_increase: float = typer.Option(0.0, "--fail-on-increase"),
 ) -> None:
     changed = set(changed_files_against_base(repo, base_ref))
-    result = run_pr_gate(repo=repo, changed=changed)
+    result = run_pr_gate(repo=repo, base_ref=base_ref, changed=changed)
     typer.echo(to_csv(result), nl=False)
     if result and float(result[0]["delta-score"]) > fail_on_increase:
         raise typer.Exit(code=2)

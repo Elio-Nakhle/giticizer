@@ -51,3 +51,5 @@ In the UI you can:
 - `fragmentation`
 - `soc`
 - `refactoring-main-dev`
+- `code-health`
+- `action-items`
