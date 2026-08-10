@@ -14,7 +14,10 @@ Giticizer is a Python CLI for behavioral code analysis inspired by Code Maat.
 ```bash
 uv sync
 uv run giticizer analyze --repo . --analysis summary --output-format csv
+uv run giticizer analyze --repo . --analysis coupling --include-dir src/backend --output-format csv
 ```
+
+Note: `--include-dir` must point to a directory inside the selected `--repo`.
 
 ## Desktop UI
 

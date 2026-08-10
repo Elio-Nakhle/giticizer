@@ -168,6 +168,7 @@ class GiticizerUI:
                 mode=self.vcs_mode.get(),
                 after=self.after.get().strip() or None,
                 no_merges=self.ignore_merges.get(),
+                include_dirs=[],
                 excludes=[],
             )
             commits = parse_log(raw, mode=self.vcs_mode.get())

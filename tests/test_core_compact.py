@@ -66,5 +66,11 @@ def test_pr_gate_uses_base_and_head(monkeypatch) -> None:  # type: ignore[no-unt
         return "--h1--2026-08-02--Alice--change\n10\t0\tsrc/a.py\n"
 
     monkeypatch.setattr("giticizer.integrations.pr_gate.read_git_log_for_ref", fake_read)
-    rows = run_pr_gate(Path("."), "origin/main", {"src/a.py"})
+    rows = run_pr_gate(
+        Path("."),
+        "origin/main",
+        {"src/a.py"},
+        include_dirs=[],
+        excludes=[],
+    )
     assert rows and float(rows[0]["head-risk"]) >= float(rows[0]["base-risk"])

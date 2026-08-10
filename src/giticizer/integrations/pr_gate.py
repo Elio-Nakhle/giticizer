@@ -8,7 +8,14 @@ from giticizer.vcs.git_reader import read_git_log_for_ref
 from giticizer.vcs.parsers import parse_log
 
 
-def run_pr_gate(repo: Path, base_ref: str, changed: set[str]) -> list[dict[str, Any]]:
+def run_pr_gate(
+    repo: Path,
+    base_ref: str,
+    changed: set[str],
+    *,
+    include_dirs: list[str],
+    excludes: list[str],
+) -> list[dict[str, Any]]:
     if not changed:
         return []
 
@@ -18,7 +25,8 @@ def run_pr_gate(repo: Path, base_ref: str, changed: set[str]) -> list[dict[str, 
             mode="git2",
             ref=base_ref,
             no_merges=False,
-            excludes=[],
+            include_dirs=include_dirs,
+            excludes=excludes,
         ),
         mode="git2",
     )
@@ -28,7 +36,8 @@ def run_pr_gate(repo: Path, base_ref: str, changed: set[str]) -> list[dict[str, 
             mode="git2",
             ref="HEAD",
             no_merges=False,
-            excludes=[],
+            include_dirs=include_dirs,
+            excludes=excludes,
         ),
         mode="git2",
     )

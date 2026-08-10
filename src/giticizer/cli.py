@@ -74,6 +74,7 @@ def analyze(
     age_time_now: str | None = typer.Option(None, "--age-time-now", "-d"),
     no_merges: bool = typer.Option(False, "--ignore-merges"),
     verbose_results: bool = typer.Option(False, "--verbose-results"),
+    include_dir: list[str] = typer.Option([], "--include-dir"),
     exclude: list[str] = typer.Option([], "--exclude"),
 ) -> None:
     if analysis not in ANALYSES:
@@ -82,7 +83,14 @@ def analyze(
         raise typer.BadParameter("output-format must be one of: csv,json")
 
     commits = parse_log(
-        read_git_log(repo, mode=vcs_mode, after=after, no_merges=no_merges, excludes=exclude),
+        read_git_log(
+            repo,
+            mode=vcs_mode,
+            after=after,
+            no_merges=no_merges,
+            include_dirs=include_dir,
+            excludes=exclude,
+        ),
         mode=vcs_mode,
     )
     if group:
@@ -127,9 +135,24 @@ def pr_gate(
     repo: Path = typer.Option(Path("."), "--repo", "-p"),
     base_ref: str = typer.Option("origin/main", "--base-ref"),
     fail_on_increase: float = typer.Option(0.0, "--fail-on-increase"),
+    include_dir: list[str] = typer.Option([], "--include-dir"),
+    exclude: list[str] = typer.Option([], "--exclude"),
 ) -> None:
-    changed = set(changed_files_against_base(repo, base_ref))
-    result = run_pr_gate(repo=repo, base_ref=base_ref, changed=changed)
+    changed = set(
+        changed_files_against_base(
+            repo,
+            base_ref,
+            include_dirs=include_dir,
+            excludes=exclude,
+        )
+    )
+    result = run_pr_gate(
+        repo=repo,
+        base_ref=base_ref,
+        changed=changed,
+        include_dirs=include_dir,
+        excludes=exclude,
+    )
     typer.echo(to_csv(result), nl=False)
     if result and float(result[0]["delta-score"]) > fail_on_increase:
         raise typer.Exit(code=2)
