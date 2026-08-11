@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 import tkinter as tk
+from collections import Counter, defaultdict
 from datetime import date
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -26,6 +28,7 @@ class GiticizerUI:
         self.vcs_mode = tk.StringVar(value="git2")
         self.after = tk.StringVar(value="")
         self.rows = tk.StringVar(value="200")
+        self.include_dirs = tk.StringVar(value="")
         self.group_file = tk.StringVar(value="")
         self.status = tk.StringVar(value="Ready")
 
@@ -103,6 +106,11 @@ class GiticizerUI:
         ttk.Label(msg_row, text="Message Regex").pack(side="left")
         ttk.Entry(msg_row, textvariable=self.expression, width=40).pack(side="left", padx=6)
 
+        include_row = ttk.Frame(frame)
+        include_row.pack(fill="x", pady=(6, 0))
+        ttk.Label(include_row, text="Include Dirs (comma-separated)").pack(side="left")
+        ttk.Entry(include_row, textvariable=self.include_dirs, width=50).pack(side="left", padx=6)
+
         explain = ttk.LabelFrame(frame, text="Analysis Meaning & Usefulness", padding=8)
         explain.pack(fill="x", pady=(8, 0))
         self.analysis_help = tk.StringVar(value=render_analysis_help(self.analysis.get()))
@@ -119,13 +127,40 @@ class GiticizerUI:
         ttk.Button(buttons, text="Run Analysis", command=self.run_analysis).pack(side="left")
         ttk.Button(buttons, text="Clear", command=self.clear).pack(side="left", padx=6)
 
-        table_wrap = ttk.Frame(frame)
+        notebook = ttk.Notebook(frame)
+        notebook.pack(fill="both", expand=True)
+
+        table_page = ttk.Frame(notebook)
+        notebook.add(table_page, text="Analysis Results")
+        table_wrap = ttk.Frame(table_page)
         table_wrap.pack(fill="both", expand=True)
         self.table = ttk.Treeview(table_wrap, show="headings")
         self.table.pack(side="left", fill="both", expand=True)
         yscroll = ttk.Scrollbar(table_wrap, orient="vertical", command=self.table.yview)
         yscroll.pack(side="right", fill="y")
         self.table.configure(yscrollcommand=yscroll.set)
+
+        cards_page = ttk.Frame(notebook)
+        notebook.add(cards_page, text="Daily Refactoring Cards")
+        self.cards_canvas = tk.Canvas(cards_page, highlightthickness=0)
+        self.cards_canvas.pack(side="left", fill="both", expand=True)
+        cards_scroll = ttk.Scrollbar(
+            cards_page,
+            orient="vertical",
+            command=self.cards_canvas.yview,
+        )
+        cards_scroll.pack(side="right", fill="y")
+        self.cards_canvas.configure(yscrollcommand=cards_scroll.set)
+        self.cards_container = ttk.Frame(self.cards_canvas)
+        self.cards_canvas.create_window((0, 0), window=self.cards_container, anchor="nw")
+        self.cards_container.bind(
+            "<Configure>",
+            lambda _: self.cards_canvas.configure(scrollregion=self.cards_canvas.bbox("all")),
+        )
+        self.cards_canvas.bind(
+            "<Configure>",
+            lambda event: self.cards_canvas.itemconfigure("all", width=event.width),
+        )
 
         ttk.Label(frame, textvariable=self.status, anchor="w").pack(fill="x", pady=(6, 0))
         top.columnconfigure(1, weight=1)
@@ -155,6 +190,8 @@ class GiticizerUI:
     def clear(self) -> None:
         self.table.delete(*self.table.get_children())
         self.table["columns"] = ()
+        for widget in self.cards_container.winfo_children():
+            widget.destroy()
         self.status.set("Cleared")
 
     def run_analysis(self) -> None:
@@ -168,7 +205,7 @@ class GiticizerUI:
                 mode=self.vcs_mode.get(),
                 after=self.after.get().strip() or None,
                 no_merges=self.ignore_merges.get(),
-                include_dirs=[],
+                include_dirs=self._split_csv(self.include_dirs.get()),
                 excludes=[],
             )
             commits = parse_log(raw, mode=self.vcs_mode.get())
@@ -176,6 +213,7 @@ class GiticizerUI:
             mapping = self.group_file.get().strip()
             if mapping:
                 commits = apply_group_mapping(commits, Path(mapping))
+            refactor_cards = self._build_refactoring_cards(commits)
             if self.temporal.get():
                 commits = aggregate_daily(commits)
 
@@ -194,7 +232,11 @@ class GiticizerUI:
             rows = fn(commits, **{k: v for k, v in kwargs.items() if k in accepted})
             limit = int(self.rows.get() or "200")
             self.render_rows(rows[:limit])
-            self.status.set(f"{self.analysis.get()}: {len(rows[:limit])} rows shown")
+            self.render_refactoring_cards(refactor_cards)
+            self.status.set(
+                f"{self.analysis.get()}: {len(rows[:limit])} rows shown, "
+                f"{len(refactor_cards)} refactoring day cards"
+            )
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Analysis Error", str(exc))
             self.status.set("Failed")
@@ -213,6 +255,70 @@ class GiticizerUI:
 
         for row in rows:
             self.table.insert("", "end", values=[row.get(c, "") for c in columns])
+
+    def render_refactoring_cards(self, cards: list[Row]) -> None:
+        for widget in self.cards_container.winfo_children():
+            widget.destroy()
+        if not cards:
+            ttk.Label(
+                self.cards_container,
+                text="No refactoring-like activity found for current filters.",
+            ).pack(anchor="w", pady=8, padx=8)
+            return
+
+        for card in cards:
+            panel = ttk.LabelFrame(
+                self.cards_container,
+                text=f"{card['date']}  |  {card['refactor-commits']} refactor commits",
+                padding=10,
+            )
+            panel.pack(fill="x", padx=8, pady=6)
+            ttk.Label(panel, text=f"Authors: {card['authors']}").pack(anchor="w")
+            ttk.Label(
+                panel,
+                text=f"Entities touched: {card['entities']}",
+            ).pack(anchor="w", pady=(4, 0))
+            ttk.Label(
+                panel,
+                text=f"Top entities: {card['top-entities']}",
+            ).pack(anchor="w", pady=(4, 0))
+            ttk.Label(panel, text=f"Example messages: {card['messages']}", wraplength=1080).pack(
+                anchor="w",
+                pady=(4, 0),
+            )
+
+    @staticmethod
+    def _split_csv(raw: str) -> list[str]:
+        return [part.strip() for part in raw.split(",") if part.strip()]
+
+    @staticmethod
+    def _build_refactoring_cards(commits: list[Any]) -> list[Row]:
+        matcher = re.compile(r"\b(refactor|cleanup|restructure|rename)\b", re.I)
+        by_day: dict[str, list[Any]] = defaultdict(list)
+        for commit in commits:
+            if matcher.search(commit.message):
+                by_day[commit.date.isoformat()].append(commit)
+
+        cards: list[Row] = []
+        for day in sorted(by_day.keys(), reverse=True):
+            chunk = by_day[day]
+            authors = sorted({c.author for c in chunk})
+            touched = [f.path for c in chunk for f in c.files]
+            top = Counter(touched).most_common(3)
+            messages = [c.message for c in chunk if c.message][:3]
+            cards.append(
+                {
+                    "date": day,
+                    "refactor-commits": len(chunk),
+                    "authors": ", ".join(authors) if authors else "n/a",
+                    "entities": len(set(touched)),
+                    "top-entities": ", ".join(f"{name} ({count})" for name, count in top)
+                    if top
+                    else "n/a",
+                    "messages": " | ".join(messages) if messages else "n/a",
+                }
+            )
+        return cards
 
 
 def run_ui() -> None:

@@ -31,8 +31,10 @@ In the UI you can:
 
 - choose the repository folder
 - choose any available analysis
+- filter scope with Include Dirs (comma-separated paths inside repo)
 - adjust thresholds and options
 - run and inspect results in a table
+- inspect daily refactoring cards in the second tab
 
 ## Implemented analyses
 
