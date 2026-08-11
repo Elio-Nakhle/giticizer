@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import re
+import threading
 import tkinter as tk
 from collections import Counter, defaultdict
 from datetime import date
 from pathlib import Path
+from queue import Empty, Queue
+from time import monotonic
 from tkinter import filedialog, messagebox, ttk
-from typing import Any
+from typing import Any, cast
 
 from giticizer.analysis.helptext import render_analysis_help
 from giticizer.cli import ANALYSES
 from giticizer.integrations.mapping import apply_group_mapping
+from giticizer.models import Commit
 from giticizer.vcs.git_reader import read_git_log
 from giticizer.vcs.parsers import aggregate_daily, parse_log
 
@@ -42,8 +46,20 @@ class GiticizerUI:
         self.max_coupling = tk.StringVar(value="100")
         self.max_changeset_size = tk.StringVar(value="30")
         self.expression = tk.StringVar(value="")
+        self._commit_cache: dict[tuple[str, str, str, bool, tuple[str, ...]], list[Commit]] = {}
+        self._parse_time_cache: dict[tuple[str, str, str, bool, tuple[str, ...]], float] = {}
+        self._is_parsing = False
+        self._parse_started_at = 0.0
+        self._parse_eta_seconds: float | None = None
+        self._parse_result_queue: Queue[tuple[str, object]] = Queue()
+        self._table_rows_original: list[Row] = []
+        self._table_columns: list[str] = []
+        self._sort_column: str | None = None
+        self._sort_mode = 0
 
         self._build()
+        self._bind_log_inputs()
+        self._sync_analysis_state()
 
     def _build(self) -> None:
         frame = ttk.Frame(self.root, padding=8)
@@ -124,8 +140,14 @@ class GiticizerUI:
 
         buttons = ttk.Frame(frame)
         buttons.pack(fill="x", pady=8)
-        ttk.Button(buttons, text="Run Analysis", command=self.run_analysis).pack(side="left")
+        self.parse_button = ttk.Button(buttons, text="Parse Log", command=self.parse_log)
+        self.parse_button.pack(side="left")
+        self.run_button = ttk.Button(buttons, text="Run Analysis", command=self.run_analysis)
+        self.run_button.pack(side="left", padx=6)
         ttk.Button(buttons, text="Clear", command=self.clear).pack(side="left", padx=6)
+        self.parse_progress = ttk.Progressbar(buttons, mode="indeterminate", length=150)
+        self.parse_eta_text = tk.StringVar(value="")
+        self.parse_eta_label = ttk.Label(buttons, textvariable=self.parse_eta_text)
 
         notebook = ttk.Notebook(frame)
         notebook.pack(fill="both", expand=True)
@@ -187,12 +209,177 @@ class GiticizerUI:
     def _on_analysis_change(self, _: object) -> None:
         self.analysis_help.set(render_analysis_help(self.analysis.get()))
 
+    def _bind_log_inputs(self) -> None:
+        for var in (self.repo, self.vcs_mode, self.after, self.include_dirs):
+            var.trace_add("write", self._on_log_filters_changed)
+        self.ignore_merges.trace_add("write", self._on_log_filters_changed)
+
+    def _on_log_filters_changed(self, *_: object) -> None:
+        self._sync_analysis_state()
+
+    def _sync_analysis_state(self) -> None:
+        if self._is_parsing:
+            self.run_button.configure(state="disabled")
+            return
+        self.run_button.configure(
+            state="normal" if self._current_log_key() in self._commit_cache else "disabled"
+        )
+
     def clear(self) -> None:
         self.table.delete(*self.table.get_children())
         self.table["columns"] = ()
+        self._table_rows_original = []
+        self._table_columns = []
+        self._sort_column = None
+        self._sort_mode = 0
         for widget in self.cards_container.winfo_children():
             widget.destroy()
         self.status.set("Cleared")
+
+    def parse_log(self) -> None:
+        if self._is_parsing:
+            return
+        try:
+            repo = Path(self.repo.get()).expanduser().resolve()
+            if not (repo / ".git").exists():
+                raise ValueError("Selected folder is not a git repository")
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Parse Error", str(exc))
+            self.status.set("Failed")
+            return
+
+        key = self._current_log_key(repo)
+        if key in self._commit_cache:
+            self.status.set("Log already parsed for current filters (cache hit)")
+            self._sync_analysis_state()
+            return
+
+        self._is_parsing = True
+        self._parse_started_at = monotonic()
+        self._parse_eta_seconds = self._estimate_parse_seconds(key)
+        self.parse_button.configure(state="disabled")
+        self.run_button.configure(state="disabled")
+        self.parse_progress.pack(side="left", padx=8)
+        self.parse_eta_label.pack(side="left")
+        self.parse_progress.start(12)
+        self.status.set("Parsing git log...")
+        self._update_parse_eta_text()
+
+        mode = self.vcs_mode.get()
+        after = self.after.get().strip() or None
+        no_merges = self.ignore_merges.get()
+        include_dirs = self._split_csv(self.include_dirs.get())
+        worker = threading.Thread(
+            target=self._parse_log_worker,
+            args=(repo, key, mode, after, no_merges, include_dirs),
+            daemon=True,
+        )
+        worker.start()
+        self.root.after(100, self._poll_parse_result)
+        self.root.after(250, self._tick_parse_eta)
+
+    def _parse_log_worker(
+        self,
+        repo: Path,
+        key: tuple[str, str, str, bool, tuple[str, ...]],
+        mode: str,
+        after: str | None,
+        no_merges: bool,
+        include_dirs: list[str],
+    ) -> None:
+        try:
+            raw = read_git_log(
+                repo,
+                mode=mode,
+                after=after,
+                no_merges=no_merges,
+                include_dirs=include_dirs,
+                excludes=[],
+            )
+            parsed = parse_log(raw, mode=mode)
+            self._parse_result_queue.put(("ok", (key, parsed)))
+        except Exception as exc:  # noqa: BLE001
+            self._parse_result_queue.put(("err", exc))
+
+    def _poll_parse_result(self) -> None:
+        if not self._is_parsing:
+            return
+        try:
+            status, payload = self._parse_result_queue.get_nowait()
+        except Empty:
+            self.root.after(100, self._poll_parse_result)
+            return
+
+        if status == "ok":
+            key, parsed = cast(
+                tuple[tuple[str, str, str, bool, tuple[str, ...]], list[Commit]],
+                payload,
+            )
+            self._finish_parse_success(key, parsed)
+            return
+
+        self._finish_parse_error(cast(Exception, payload))
+
+    def _tick_parse_eta(self) -> None:
+        if not self._is_parsing:
+            return
+        self._update_parse_eta_text()
+        self.root.after(250, self._tick_parse_eta)
+
+    def _update_parse_eta_text(self) -> None:
+        elapsed = max(0.0, monotonic() - self._parse_started_at)
+        if self._parse_eta_seconds is None:
+            self.parse_eta_text.set(f"Elapsed {elapsed:.1f}s")
+            return
+        remaining = max(0.0, self._parse_eta_seconds - elapsed)
+        self.parse_eta_text.set(f"Elapsed {elapsed:.1f}s | ETA {remaining:.1f}s")
+
+    def _estimate_parse_seconds(
+        self,
+        key: tuple[str, str, str, bool, tuple[str, ...]],
+    ) -> float | None:
+        exact = self._parse_time_cache.get(key)
+        if exact is not None:
+            return exact
+        repo_prefix = key[0]
+        repo_samples = [
+            seconds
+            for cache_key, seconds in self._parse_time_cache.items()
+            if cache_key[0] == repo_prefix
+        ]
+        if repo_samples:
+            return sum(repo_samples) / len(repo_samples)
+        if self._parse_time_cache:
+            all_samples = list(self._parse_time_cache.values())
+            return sum(all_samples) / len(all_samples)
+        return None
+
+    def _finish_parse_success(
+        self,
+        key: tuple[str, str, str, bool, tuple[str, ...]],
+        parsed: list[Commit],
+    ) -> None:
+        self._commit_cache[key] = parsed
+        self._parse_time_cache[key] = max(0.0, monotonic() - self._parse_started_at)
+        self._is_parsing = False
+        self.parse_progress.stop()
+        self.parse_progress.pack_forget()
+        self.parse_eta_text.set("")
+        self.parse_eta_label.pack_forget()
+        self.parse_button.configure(state="normal")
+        self._sync_analysis_state()
+        self.status.set(f"Parsed {len(parsed)} commits. Analysis enabled.")
+
+    def _finish_parse_error(self, exc: Exception) -> None:
+        self._is_parsing = False
+        self.parse_progress.stop()
+        self.parse_progress.pack_forget()
+        self.parse_eta_text.set("")
+        self.parse_eta_label.pack_forget()
+        self.parse_button.configure(state="normal")
+        self._sync_analysis_state()
+        messagebox.showerror("Parse Error", str(exc))
+        self.status.set("Failed")
 
     def run_analysis(self) -> None:
         try:
@@ -200,15 +387,11 @@ class GiticizerUI:
             if not (repo / ".git").exists():
                 raise ValueError("Selected folder is not a git repository")
 
-            raw = read_git_log(
-                repo,
-                mode=self.vcs_mode.get(),
-                after=self.after.get().strip() or None,
-                no_merges=self.ignore_merges.get(),
-                include_dirs=self._split_csv(self.include_dirs.get()),
-                excludes=[],
-            )
-            commits = parse_log(raw, mode=self.vcs_mode.get())
+            key = self._current_log_key(repo)
+            cached = self._commit_cache.get(key)
+            if cached is None:
+                raise ValueError("Log is not parsed for current filters. Click 'Parse Log' first.")
+            commits = list(cached)
 
             mapping = self.group_file.get().strip()
             if mapping:
@@ -235,7 +418,7 @@ class GiticizerUI:
             self.render_refactoring_cards(refactor_cards)
             self.status.set(
                 f"{self.analysis.get()}: {len(rows[:limit])} rows shown, "
-                f"{len(refactor_cards)} refactoring day cards"
+                f"{len(refactor_cards)} refactoring day cards (cache hit)"
             )
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Analysis Error", str(exc))
@@ -245,16 +428,79 @@ class GiticizerUI:
         self.table.delete(*self.table.get_children())
         if not rows:
             self.table["columns"] = ()
+            self._table_rows_original = []
+            self._table_columns = []
+            self._sort_column = None
+            self._sort_mode = 0
             return
 
         columns = list(rows[0].keys())
+        self._table_rows_original = list(rows)
+        self._table_columns = columns
+        self._sort_column = None
+        self._sort_mode = 0
         self.table["columns"] = columns
         for name in columns:
-            self.table.heading(name, text=name)
+            self.table.heading(name, text=name, command=lambda col=name: self._on_sort_column(col))
             self.table.column(name, width=150, anchor="w")
 
+        self._render_table_values(self._table_rows_original)
+
+    def _render_table_values(self, rows: list[Row]) -> None:
+        self.table.delete(*self.table.get_children())
         for row in rows:
-            self.table.insert("", "end", values=[row.get(c, "") for c in columns])
+            self.table.insert("", "end", values=[row.get(c, "") for c in self._table_columns])
+
+    def _on_sort_column(self, column: str) -> None:
+        if not self._table_rows_original:
+            return
+        if self._sort_column == column:
+            self._sort_mode = (self._sort_mode + 1) % 3
+        else:
+            self._sort_column = column
+            self._sort_mode = 1
+
+        if self._sort_mode == 0:
+            rows = list(self._table_rows_original)
+        else:
+            rows = sorted(
+                self._table_rows_original,
+                key=lambda row: self._sort_value(row.get(column)),
+                reverse=self._sort_mode == 2,
+            )
+
+        self._refresh_sort_headers()
+        self._render_table_values(rows)
+
+    def _refresh_sort_headers(self) -> None:
+        for name in self._table_columns:
+            suffix = ""
+            if name == self._sort_column:
+                if self._sort_mode == 1:
+                    suffix = " ▲"
+                elif self._sort_mode == 2:
+                    suffix = " ▼"
+            self.table.heading(
+                name,
+                text=f"{name}{suffix}",
+                command=lambda col=name: self._on_sort_column(col),
+            )
+
+    @staticmethod
+    def _sort_value(value: object) -> tuple[int, object]:
+        if value is None:
+            return (3, "")
+        if isinstance(value, bool):
+            return (0, int(value))
+        if isinstance(value, int | float):
+            return (0, float(value))
+        if isinstance(value, str):
+            text = value.strip()
+            try:
+                return (0, float(text))
+            except ValueError:
+                return (1, text.lower())
+        return (2, str(value).lower())
 
     def render_refactoring_cards(self, cards: list[Row]) -> None:
         for widget in self.cards_container.winfo_children():
@@ -290,6 +536,19 @@ class GiticizerUI:
     @staticmethod
     def _split_csv(raw: str) -> list[str]:
         return [part.strip() for part in raw.split(",") if part.strip()]
+
+    def _current_log_key(
+        self,
+        repo: Path | None = None,
+    ) -> tuple[str, str, str, bool, tuple[str, ...]]:
+        resolved_repo = repo or Path(self.repo.get()).expanduser().resolve()
+        return (
+            resolved_repo.as_posix(),
+            self.vcs_mode.get(),
+            self.after.get().strip(),
+            self.ignore_merges.get(),
+            tuple(sorted(self._split_csv(self.include_dirs.get()))),
+        )
 
     @staticmethod
     def _build_refactoring_cards(commits: list[Any]) -> list[Row]:
