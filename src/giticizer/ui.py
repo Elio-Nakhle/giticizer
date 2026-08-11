@@ -13,6 +13,7 @@ from typing import Any, cast
 
 from giticizer.analysis.helptext import render_analysis_help
 from giticizer.cli import ANALYSES
+from giticizer.exporters.io import to_csv
 from giticizer.integrations.mapping import apply_group_mapping
 from giticizer.models import Commit
 from giticizer.vcs.git_reader import read_git_log
@@ -53,6 +54,7 @@ class GiticizerUI:
         self._parse_eta_seconds: float | None = None
         self._parse_result_queue: Queue[tuple[str, object]] = Queue()
         self._table_rows_original: list[Row] = []
+        self._table_rows_view: list[Row] = []
         self._table_columns: list[str] = []
         self._sort_column: str | None = None
         self._sort_mode = 0
@@ -144,6 +146,12 @@ class GiticizerUI:
         self.parse_button.pack(side="left")
         self.run_button = ttk.Button(buttons, text="Run Analysis", command=self.run_analysis)
         self.run_button.pack(side="left", padx=6)
+        self.export_button = ttk.Button(
+            buttons,
+            text="Export View CSV",
+            command=self.export_view_csv,
+        )
+        self.export_button.pack(side="left")
         ttk.Button(buttons, text="Clear", command=self.clear).pack(side="left", padx=6)
         self.parse_progress = ttk.Progressbar(buttons, mode="indeterminate", length=150)
         self.parse_eta_text = tk.StringVar(value="")
@@ -229,6 +237,7 @@ class GiticizerUI:
         self.table.delete(*self.table.get_children())
         self.table["columns"] = ()
         self._table_rows_original = []
+        self._table_rows_view = []
         self._table_columns = []
         self._sort_column = None
         self._sort_mode = 0
@@ -429,6 +438,7 @@ class GiticizerUI:
         if not rows:
             self.table["columns"] = ()
             self._table_rows_original = []
+            self._table_rows_view = []
             self._table_columns = []
             self._sort_column = None
             self._sort_mode = 0
@@ -436,6 +446,7 @@ class GiticizerUI:
 
         columns = list(rows[0].keys())
         self._table_rows_original = list(rows)
+        self._table_rows_view = list(rows)
         self._table_columns = columns
         self._sort_column = None
         self._sort_mode = 0
@@ -447,6 +458,7 @@ class GiticizerUI:
         self._render_table_values(self._table_rows_original)
 
     def _render_table_values(self, rows: list[Row]) -> None:
+        self._table_rows_view = list(rows)
         self.table.delete(*self.table.get_children())
         for row in rows:
             self.table.insert("", "end", values=[row.get(c, "") for c in self._table_columns])
@@ -501,6 +513,20 @@ class GiticizerUI:
             except ValueError:
                 return (1, text.lower())
         return (2, str(value).lower())
+
+    def export_view_csv(self) -> None:
+        if not self._table_rows_view:
+            messagebox.showinfo("Export CSV", "No table data to export.")
+            return
+        target = filedialog.asksaveasfilename(
+            title="Export Current View to CSV",
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        if not target:
+            return
+        Path(target).write_text(to_csv(self._table_rows_view), encoding="utf-8")
+        self.status.set(f"Exported {len(self._table_rows_view)} rows to {Path(target).name}")
 
     def render_refactoring_cards(self, cards: list[Row]) -> None:
         for widget in self.cards_container.winfo_children():
