@@ -10,7 +10,11 @@ import typer
 from giticizer.analysis import core
 from giticizer.analysis.helptext import render_all_analysis_help, render_analysis_help
 from giticizer.exporters.io import to_csv, to_json
-from giticizer.integrations.mapping import apply_group_mapping, validate_group_mapping
+from giticizer.integrations.mapping import (
+    apply_group_mapping,
+    generate_group_mapping,
+    validate_group_mapping,
+)
 from giticizer.integrations.pr_gate import run_pr_gate
 from giticizer.scoring.action_items import action_items
 from giticizer.scoring.code_health import score_entities
@@ -128,6 +132,23 @@ def validate_mapping(
     result = validate_group_mapping(repo, mapping_file)
     text = to_csv(result)
     typer.echo(text, nl=False)
+
+
+@app.command("generate-mapping")
+def generate_mapping(
+    repo: Path = typer.Option(Path("."), "--repo", "-p"),
+    output_file: Path = typer.Option(Path("mapping.auto.txt"), "--output-file", "-o"),
+    depth: int = typer.Option(2, "--depth"),
+    min_files: int = typer.Option(1, "--min-files"),
+) -> None:
+    result = generate_group_mapping(
+        repo=repo,
+        output_file=output_file,
+        depth=depth,
+        min_files=min_files,
+    )
+    validation = validate_group_mapping(repo, output_file)
+    typer.echo(to_csv(result + validation), nl=False)
 
 
 @app.command("pr-gate")

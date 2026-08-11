@@ -58,3 +58,14 @@ In the UI you can:
 - `refactoring-main-dev`
 - `code-health`
 - `action-items`
+
+## Mapping Automation
+
+Generate a first-pass architectural mapping file from your repository structure:
+
+```bash
+uv run giticizer generate-mapping --repo . --output-file mapping.auto.txt --depth 2 --min-files 1
+uv run giticizer validate-mapping mapping.auto.txt --repo .
+```
+
+Rules are emitted as `regex => group` and can be edited manually after generation.

@@ -2,7 +2,11 @@ from datetime import date
 from pathlib import Path
 
 from giticizer.analysis import core
-from giticizer.integrations.mapping import apply_group_mapping, validate_group_mapping
+from giticizer.integrations.mapping import (
+    apply_group_mapping,
+    generate_group_mapping,
+    validate_group_mapping,
+)
 from giticizer.integrations.pr_gate import run_pr_gate
 from giticizer.models import Commit, FileChange
 from giticizer.scoring.action_items import action_items
@@ -43,6 +47,22 @@ def test_mapping(tmp_path: Path) -> None:
     (tmp_path / "src" / "a.py").write_text("x", encoding="utf-8")
     stats = {r["statistic"]: r["value"] for r in validate_group_mapping(tmp_path, m)}
     assert stats["rules"] == 1 and stats["files-total"] >= 1
+
+
+def test_generate_mapping(tmp_path: Path) -> None:
+    (tmp_path / "src" / "api").mkdir(parents=True)
+    (tmp_path / "src" / "web").mkdir(parents=True)
+    (tmp_path / "src" / "api" / "a.py").write_text("x", encoding="utf-8")
+    (tmp_path / "src" / "web" / "b.py").write_text("x", encoding="utf-8")
+
+    output = tmp_path / "mapping.auto.txt"
+    report = generate_group_mapping(tmp_path, output, depth=2, min_files=1)
+    assert output.exists()
+    text = output.read_text(encoding="utf-8")
+    assert "^src/api/.* => src/api" in text
+    assert "^src/web/.* => src/web" in text
+    as_map = {r["statistic"]: r["value"] for r in report}
+    assert int(as_map["generated-rules"]) >= 2
 
 
 def test_action_items_schema() -> None:
